@@ -35,27 +35,34 @@ jobs:
 
       - name: Configure SSH (write key safely + known_hosts)
         shell: bash
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          printf '%s' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          printf '%s' "$VM_SSH_KEY" > ~/.ssh/id_rsa
           sed -i 's/\r$//' ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
           ssh-keygen -lf ~/.ssh/id_rsa >/dev/null
 
-          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+          # Prefer pinning a known_hosts secret in production; keyscan is convenient but less strict.
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
       - name: SSH debug (optional)
         if: ${{ inputs.ssh_debug == 'true' }}
         shell: bash
+        env:
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_HOST: ${{ secrets.VM_HOST }}
         run: |
           set -euo pipefail
           ssh -vvv -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
-            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" "echo ok"
+            "$VM_USER@$VM_HOST" "echo ok"
 
       - name: Bootstrap VM (/opt, venv, deps, systemd, env keys)
         if: ${{ inputs.action == 'bootstrap' }}
@@ -64,8 +71,13 @@ jobs:
           REPO_SLUG: ${{ github.repository }}
           BRANCH: ${{ inputs.branch }}
           REPO_DIR: /opt/bittbridge/Bittbridge
+
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
           MINER_WALLET_NAME: ${{ secrets.MINER_WALLET_NAME }}
           MINER_HOTKEY_NAME: ${{ secrets.MINER_HOTKEY_NAME }}
           VALIDATOR_WALLET_NAME: ${{ secrets.VALIDATOR_WALLET_NAME }}
@@ -198,7 +210,7 @@ jobs:
           sudo systemctl enable --now bittbridge-miner bittbridge-validator
           SCRIPT
 
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "$VM_USER@$VM_HOST" \
             "REPO_SLUG='${REPO_SLUG}' BRANCH='${BRANCH}' REPO_DIR='${REPO_DIR}' \
              COINGECKO_API_KEY='${COINGECKO_API_KEY}' WANDB_API_KEY='${WANDB_API_KEY}' \
              MINER_WALLET_NAME='${MINER_WALLET_NAME}' MINER_HOTKEY_NAME='${MINER_HOTKEY_NAME}' \
@@ -208,6 +220,9 @@ jobs:
       - name: Deploy miner_model/ and restart services
         if: ${{ inputs.action == 'deploy' }}
         shell: bash
+        env:
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_HOST: ${{ secrets.VM_HOST }}
         run: |
           set -euo pipefail
           test -d miner_model
@@ -218,19 +233,22 @@ jobs:
           rsync -az --delete \
             -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes" \
             miner_model/ \
-            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:$REPO_DIR/miner_model/"
+            "$VM_USER@$VM_HOST:$REPO_DIR/miner_model/"
 
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
-            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "$VM_USER@$VM_HOST" \
             "sudo systemctl restart bittbridge-miner bittbridge-validator"
 
       - name: Logs (miner + validator)
         if: ${{ inputs.action == 'logs' }}
         shell: bash
+        env:
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_HOST: ${{ secrets.VM_HOST }}
         run: |
           set -euo pipefail
           LINES="${{ inputs.log_lines }}"
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "$VM_USER@$VM_HOST" \
             "echo '--- MINER STATUS ---'; sudo systemctl --no-pager -l status bittbridge-miner || true; \
              echo '--- VALIDATOR STATUS ---'; sudo systemctl --no-pager -l status bittbridge-validator || true; \
              echo '--- MINER LOGS ---'; sudo journalctl -u bittbridge-miner -n ${LINES} --no-pager || true; \
