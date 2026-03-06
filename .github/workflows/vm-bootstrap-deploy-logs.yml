@@ -63,4 +63,184 @@ jobs:
         if: ${{ inputs.action == 'bootstrap' }}
         shell: bash
         env:
-          REPO_SLUG: ${{
+          REPO_SLUG: ${{ github.repository }}
+          BRANCH: ${{ inputs.branch }}
+          REPO_DIR: /opt/bittbridge/Bittbridge
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          MINER_WALLET_NAME: ${{ secrets.MINER_WALLET_NAME }}
+          MINER_HOTKEY_NAME: ${{ secrets.MINER_HOTKEY_NAME }}
+          VALIDATOR_WALLET_NAME: ${{ secrets.VALIDATOR_WALLET_NAME }}
+          VALIDATOR_HOTKEY_NAME: ${{ secrets.VALIDATOR_HOTKEY_NAME }}
+        run: |
+          set -euo pipefail
+
+          # Create bootstrap script locally, then stream it to remote via stdin (simpler than base64 + quoting)
+          cat > /tmp/bittbridge-bootstrap.sh <<'SCRIPT'
+          set -euo pipefail
+
+          sudo -n true
+
+          sudo apt-get update
+          sudo apt-get install -y git python3 python3-venv python3-pip rsync
+
+          sudo mkdir -p /opt/bittbridge
+          # Use the SSH user (SUDO_USER) when available; fallback to current user
+          OWNER_USER="${SUDO_USER:-$USER}"
+          sudo chown -R "$OWNER_USER:$OWNER_USER" /opt/bittbridge
+
+          if [ ! -d "$REPO_DIR/.git" ]; then
+            git clone --branch "$BRANCH" "https://github.com/$REPO_SLUG.git" "$REPO_DIR"
+          fi
+
+          cd "$REPO_DIR"
+          git fetch origin
+
+          # Be robust even if branch isn't currently checked out locally
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git pull --ff-only
+
+          if [ ! -d venv ]; then
+            python3 -m venv venv
+          fi
+
+          ./venv/bin/python -m pip install --upgrade pip setuptools wheel
+          ./venv/bin/pip install bittensor bittensor-cli wandb pytz
+
+          # Write env file with current values
+          sudo mkdir -p /etc/bittbridge
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          env_txt = """SUBTENSOR_NETWORK=test
+          NETUID=420
+
+          MINER_WALLET_NAME={miner_wallet}
+          MINER_HOTKEY_NAME={miner_hotkey}
+
+          VALIDATOR_WALLET_NAME={validator_wallet}
+          VALIDATOR_HOTKEY_NAME={validator_hotkey}
+
+          COINGECKO_API_KEY={coingecko}
+          WANDB_API_KEY={wandb}
+          """.format(
+              miner_wallet=os.environ.get("MINER_WALLET_NAME") or "miner",
+              miner_hotkey=os.environ.get("MINER_HOTKEY_NAME") or "default",
+              validator_wallet=os.environ.get("VALIDATOR_WALLET_NAME") or "validator",
+              validator_hotkey=os.environ.get("VALIDATOR_HOTKEY_NAME") or "default",
+              coingecko=os.environ.get("COINGECKO_API_KEY") or "",
+              wandb=os.environ.get("WANDB_API_KEY") or "",
+          )
+
+          Path("/etc/bittbridge/bittbridge.env").write_text(env_txt)
+          PY
+          sudo chmod 600 /etc/bittbridge/bittbridge.env
+          sudo chown root:root /etc/bittbridge/bittbridge.env
+
+          # Create systemd units with concrete wallet/hotkey values
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          repo_dir = os.environ["REPO_DIR"]
+
+          # Prefer the SSH login user for systemd service user
+          service_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "root"
+
+          miner_wallet = os.environ.get("MINER_WALLET_NAME") or "miner"
+          miner_hotkey = os.environ.get("MINER_HOTKEY_NAME") or "default"
+          validator_wallet = os.environ.get("VALIDATOR_WALLET_NAME") or "validator"
+          validator_hotkey = os.environ.get("VALIDATOR_HOTKEY_NAME") or "default"
+
+          miner_unit = f"""[Unit]
+          Description=Bittbridge Miner (neurons.miner)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User={service_user}
+          WorkingDirectory={repo_dir}
+          EnvironmentFile=/etc/bittbridge/bittbridge.env
+          ExecStart={repo_dir}/venv/bin/python -m neurons.miner \\
+            --netuid 420 \\
+            --subtensor.network test \\
+            --wallet.name {miner_wallet} \\
+            --wallet.hotkey {miner_hotkey} \\
+            --logging.debug
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          """
+
+          validator_unit = f"""[Unit]
+          Description=Bittbridge Validator (neurons.validator)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User={service_user}
+          WorkingDirectory={repo_dir}
+          EnvironmentFile=/etc/bittbridge/bittbridge.env
+          ExecStart={repo_dir}/venv/bin/python -m neurons.validator \\
+            --netuid 420 \\
+            --subtensor.network test \\
+            --wallet.name {validator_wallet} \\
+            --wallet.hotkey {validator_hotkey} \\
+            --logging.debug
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          """
+
+          Path("/etc/systemd/system/bittbridge-miner.service").write_text(miner_unit)
+          Path("/etc/systemd/system/bittbridge-validator.service").write_text(validator_unit)
+          PY
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now bittbridge-miner bittbridge-validator
+          SCRIPT
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "REPO_SLUG='${REPO_SLUG}' BRANCH='${BRANCH}' REPO_DIR='${REPO_DIR}' \
+             COINGECKO_API_KEY='${COINGECKO_API_KEY}' WANDB_API_KEY='${WANDB_API_KEY}' \
+             MINER_WALLET_NAME='${MINER_WALLET_NAME}' MINER_HOTKEY_NAME='${MINER_HOTKEY_NAME}' \
+             VALIDATOR_WALLET_NAME='${VALIDATOR_WALLET_NAME}' VALIDATOR_HOTKEY_NAME='${VALIDATOR_HOTKEY_NAME}' \
+             bash -s" < /tmp/bittbridge-bootstrap.sh
+
+      - name: Deploy miner_model/ and restart services
+        if: ${{ inputs.action == 'deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d miner_model
+          ls -1 miner_model/*.h5 >/dev/null
+
+          REPO_DIR="/opt/bittbridge/Bittbridge"
+
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes" \
+            miner_model/ \
+            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:$REPO_DIR/miner_model/"
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
+            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "sudo systemctl restart bittbridge-miner bittbridge-validator"
+
+      - name: Logs (miner + validator)
+        if: ${{ inputs.action == 'logs' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          LINES="${{ inputs.log_lines }}"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "echo '--- MINER STATUS ---'; sudo systemctl --no-pager -l status bittbridge-miner || true; \
+             echo '--- VALIDATOR STATUS ---'; sudo systemctl --no-pager -l status bittbridge-validator || true; \
+             echo '--- MINER LOGS ---'; sudo journalctl -u bittbridge-miner -n ${LINES} --no-pager || true; \
+             echo '--- VALIDATOR LOGS ---'; sudo journalctl -u bittbridge-validator -n ${LINES} --no-pager || true"
