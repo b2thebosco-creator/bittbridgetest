@@ -1,27 +1,48 @@
-name: Deploy
+name: Bittbridge Deployment
 
 on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Choose action'
+        required: true
+        default: 'deploy'
+        options: [ 'bootstrap', 'deploy', 'logs', 'import_wallets' ]
   push:
     branches:
       - main
 
 jobs:
-  deploy:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Configure SSH (base64 key + known_hosts)
+      - name: Configure SSH
         run: |
-          echo "$SSH_PRIVATE_KEY" | base64 --decode > $HOME/.ssh/id_rsa
-          chmod 600 $HOME/.ssh/id_rsa
-          ssh-keygen -y 2>/tmp/ssh_keygen_err || { cat /tmp/ssh_keygen_err && exit 1; }
-          ssh-keyscan -H example.com 2>/tmp/sshscan_err || { cat /tmp/sshscan_err && exit 1; }
-          echo 'Known hosts configured successfully.'
-      
-      - name: Deploy application
+          echo "$VM_SSH_KEY_B64" | base64 -d > key
+          chmod 600 key
+          ssh-keygen -y -f key 2>/dev/null
+          ssh-keyscan -H "$VM_HOST" 2>/dev/null >> ~/.ssh/known_hosts
+
+      - name: Bootstrap
         run: |
-          ./deploy_script.sh
-        env:
-          ENV_VAR: value
+          echo 'Running bootstrap step...'
+          # Add your bootstrap commands here
+
+      - name: Import Wallets
+        run: |
+          echo 'Running import_wallets step...'
+          # Add your import_wallets commands here
+
+      - name: Deploy Miner Model
+        run: |
+          echo 'Deploying miner model...'
+          # Add your deploy commands here
+
+      - name: Logs
+        run: |
+          echo 'Running logs step...'
+          # Add your logs commands here
