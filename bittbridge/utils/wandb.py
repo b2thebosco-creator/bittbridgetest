@@ -3,7 +3,9 @@ import bittensor as bt
 import wandb
 from bittbridge import __version__
 
-WANDB_ENTITY = "bittbridge_uconn"
+#WANDB_ENTITY = "bittbridge_uconn"
+# TODO: change to actual entity
+WANDB_ENTITY = "dwtest"
 
 def setup_wandb(self) -> None:
     wandb_api_key = os.getenv("WANDB_API_KEY")
