@@ -7,7 +7,10 @@ on:
         description: "bootstrap=install & create services, deploy=upload miner_model + restart, logs=show recent logs"
         required: true
         type: choice
-        options: [bootstrap, deploy, logs]
+        options:
+          - bootstrap
+          - deploy
+          - logs
       branch:
         description: "Branch to use on the VM (bootstrap only)"
         required: true
@@ -26,7 +29,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Only needed for deploy (so we have miner_model/ locally)
       - name: Checkout (deploy only)
         if: ${{ inputs.action == 'deploy' }}
         uses: actions/checkout@v4
@@ -38,16 +40,12 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Write the private key EXACTLY (avoid heredoc indentation corrupting the key)
           printf '%s' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
-          # Normalize potential CRLF
           sed -i 's/\r$//' ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          # Sanity-check the key parses
           ssh-keygen -lf ~/.ssh/id_rsa >/dev/null
 
-          # Pin host key (consider replacing keyscan with a pre-pinned known_hosts secret for best security)
           ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
@@ -75,7 +73,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Create bootstrap script locally, then stream it to remote via stdin (simpler than base64 + quoting)
           cat > /tmp/bittbridge-bootstrap.sh <<'SCRIPT'
           set -euo pipefail
 
@@ -85,7 +82,6 @@ jobs:
           sudo apt-get install -y git python3 python3-venv python3-pip rsync
 
           sudo mkdir -p /opt/bittbridge
-          # Use the SSH user (SUDO_USER) when available; fallback to current user
           OWNER_USER="${SUDO_USER:-$USER}"
           sudo chown -R "$OWNER_USER:$OWNER_USER" /opt/bittbridge
 
@@ -96,7 +92,6 @@ jobs:
           cd "$REPO_DIR"
           git fetch origin
 
-          # Be robust even if branch isn't currently checked out locally
           git checkout -B "$BRANCH" "origin/$BRANCH"
           git pull --ff-only
 
@@ -107,7 +102,6 @@ jobs:
           ./venv/bin/python -m pip install --upgrade pip setuptools wheel
           ./venv/bin/pip install bittensor bittensor-cli wandb pytz
 
-          # Write env file with current values
           sudo mkdir -p /etc/bittbridge
           sudo python3 - <<'PY'
           from pathlib import Path
@@ -138,14 +132,11 @@ jobs:
           sudo chmod 600 /etc/bittbridge/bittbridge.env
           sudo chown root:root /etc/bittbridge/bittbridge.env
 
-          # Create systemd units with concrete wallet/hotkey values
           sudo python3 - <<'PY'
           from pathlib import Path
           import os
 
           repo_dir = os.environ["REPO_DIR"]
-
-          # Prefer the SSH login user for systemd service user
           service_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "root"
 
           miner_wallet = os.environ.get("MINER_WALLET_NAME") or "miner"
