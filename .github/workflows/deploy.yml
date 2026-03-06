@@ -27,29 +27,48 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout (deploy only)
         if: ${{ inputs.action == 'deploy' }}
         uses: actions/checkout@v4
 
-      - name: Configure SSH (write key safely + known_hosts)
+      - name: Configure SSH (write key + known_hosts)
         shell: bash
         env:
           VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
           VM_HOST: ${{ secrets.VM_HOST }}
         run: |
           set -euo pipefail
+
+          if [[ -z "${VM_SSH_KEY:-}" ]]; then
+            echo "ERROR: VM_SSH_KEY secret is empty or not set."
+            exit 1
+          fi
+          if [[ -z "${VM_HOST:-}" ]]; then
+            echo "ERROR: VM_HOST secret is empty or not set."
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
+          # Write the private key exactly as provided in the secret
           printf '%s' "$VM_SSH_KEY" > ~/.ssh/id_rsa
+          # Normalize CRLF if the secret was pasted from Windows
           sed -i 's/\r$//' ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          ssh-keygen -lf ~/.ssh/id_rsa >/dev/null
+          # SAFE diagnostics (no key contents leaked)
+          echo "id_rsa first line masked: $(head -n 1 ~/.ssh/id_rsa | sed 's/./*/g')"
+          echo "id_rsa last line masked:  $(tail -n 1 ~/.ssh/id_rsa | sed 's/./*/g')"
+          echo "id_rsa bytes:            $(wc -c < ~/.ssh/id_rsa)"
 
-          # Prefer pinning a known_hosts secret in production; keyscan is convenient but less strict.
+          # Validate that it is a readable private key (fails if not a key, or if encrypted w/ passphrase)
+          ssh-keygen -y -f ~/.ssh/id_rsa >/dev/null
+
+          # Host key
           ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
@@ -103,7 +122,6 @@ jobs:
 
           cd "$REPO_DIR"
           git fetch origin
-
           git checkout -B "$BRANCH" "origin/$BRANCH"
           git pull --ff-only
 
